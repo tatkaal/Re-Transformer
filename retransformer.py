@@ -66,10 +66,16 @@ class ReTransformerEncoderLayer(nn.Module):
         super(ReTransformerEncoderLayer, self).__init__()
         self.self_attn1 = MultiHeadAttention(d_model, num_heads)
         self.self_attn2 = MultiHeadAttention(d_model, num_heads)
+        self.feed_forward = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model),
+            nn.ReLU(),
+            nn.Linear(4 * d_model, d_model)
+        )
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-        self.delay_nl = delay_nl  # Number of layers to delay non-linear transformation
+        self.delay_nl = delay_nl
 
     def forward(self, x, layer_num):
         attn_output1 = self.self_attn1(x, x, x)
@@ -78,13 +84,20 @@ class ReTransformerEncoderLayer(nn.Module):
         if layer_num >= self.delay_nl:
             x = x + self.dropout(attn_output1)
             x = self.norm1(x)
-            x = x + self.dropout(attn_output2)  # Added this line to delay the second attention as well
-            x = self.norm2(x)  # Added this line to delay the second normalization as well
-        
+            x = x + self.dropout(attn_output2)
+            x = self.norm2(x)
+            
+            # Apply feed-forward layer only for specific layers
+            if layer_num % 2 == 0:
+                ff_output = self.feed_forward(x)
+                x = x + self.dropout(ff_output)
+                x = self.norm3(x)
         else:
             x = x + self.dropout(attn_output2)
             x = self.norm2(x)
+        
         return x
+
 
 # Re-Transformer Decoder Layer
 class ReTransformerDecoderLayer(nn.Module):
@@ -122,73 +135,6 @@ class ReTransformer(nn.Module):
             [ReTransformerDecoderLayer(d_model, num_heads, dropout) for _ in range(num_decoder_layers)]
         )
         self.fc_out = nn.Linear(d_model, len(TGT_vocab))
-
-    def beam_search(self, src, beam_size=3, max_len=50):
-        src = src.long()
-        src = self.src_embedding(src)
-        src = self.pos_encoder(src)
-        for layer_num, layer in enumerate(self.encoder):
-            src = layer(src, layer_num)
-
-        batch_size = src.shape[0]
-        device = src.device
-        
-        # Initialize priority queues, one for each example in the batch
-        sequences = [PriorityQueue() for _ in range(batch_size)]
-        
-        # Initialize with <sos> for each example
-        # sos_token = self.TGT_vocab.get_stoi()['<sos>']
-        sos_token = 1
-        initial_seq = [(0, [sos_token])]
-        
-        for q in sequences:
-            for score, seq in initial_seq:
-                q.put((score, seq))
-
-        # Perform beam search
-        for _ in range(max_len):
-            new_sequences = [PriorityQueue() for _ in range(batch_size)]
-            
-            for batch_idx in range(batch_size):
-                q = sequences[batch_idx]
-                
-                candidates = []
-                while not q.empty():
-                    score, seq = q.get()
-                    candidates.append((score, seq))
-                    
-                for score, seq in candidates:
-                    tgt_input = torch.LongTensor(seq).unsqueeze(0).to(device)
-                    tgt = self.tgt_embedding(tgt_input)
-                    tgt = self.pos_encoder(tgt)
-                    
-                    for layer in self.decoder:
-                        tgt = layer(tgt, src[batch_idx].unsqueeze(0))
-                    
-                    logits = self.fc_out(tgt)
-                    probs = torch.nn.functional.log_softmax(logits, dim=-1)
-                    next_word_probs = probs[0, -1]
-                    
-                    for k in range(beam_size):
-                        next_word = next_word_probs.argsort()[-(k+1)].item()
-                        new_score = score + next_word_probs[next_word].item()
-                        
-                        new_seq = seq + [next_word]
-                        new_sequences[batch_idx].put((new_score, new_seq))
-                        
-                # Trim to keep only top `beam_size` sequences
-                for i in range(beam_size):
-                    if new_sequences[batch_idx].empty():
-                        break
-                    
-                    score, seq = new_sequences[batch_idx].get()
-                    sequences[batch_idx].put((score, seq))
-
-        # Extract the best sequences after the loop
-        final_sequences = [q.get()[1] for q in sequences]
-
-        return final_sequences
-
 
     def forward(self, src, tgt=None):
         src = self.src_embedding(src)  # Embed source sequences
