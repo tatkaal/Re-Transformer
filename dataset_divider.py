@@ -7,9 +7,7 @@ df = pd.read_csv('merged_parallel.csv')
 # Shuffle the DataFrame
 df = df.sample(frac=1).reset_index(drop=True)
 
-# Calculate the sizes for each subset
-valid_size = int(0.01 * len(df))
-test_size = int(0.01 * len(df))
+df = df[:6000]
 
 # Split the DataFrame
 df_valid_test, df_train = train_test_split(df, test_size=(1 - 2 * 0.01), random_state=42)

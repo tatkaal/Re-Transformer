@@ -1,8 +1,6 @@
 import math
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from queue import PriorityQueue
 
 # Positional Encoding
 class PositionalEncoding(nn.Module):
@@ -22,44 +20,43 @@ class PositionalEncoding(nn.Module):
         x = x + pe[:, :x.size(1), :]
         return x
 
-# Define the Multi-Head Attention mechanism
+# Multi-Head Attention with Masking
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads):
         super(MultiHeadAttention, self).__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
+        assert self.head_dim * num_heads == d_model, "Embedding size needs to be divisible by num_heads"
 
-        assert (
-            self.head_dim * num_heads == d_model
-        ), "Embedding size needs to be divisible by num_heads"
-
-        self.query = nn.Linear(self.head_dim, self.head_dim)
-        self.key = nn.Linear(self.head_dim, self.head_dim)
-        self.value = nn.Linear(self.head_dim, self.head_dim)
-
+        self.query = nn.Linear(d_model, d_model)  # Changed from self.head_dim
+        self.key = nn.Linear(d_model, d_model)    # Changed from self.head_dim
+        self.value = nn.Linear(d_model, d_model)  # Changed from self.head_dim
         self.fc_out = nn.Linear(d_model, d_model)
 
-    def forward(self, query, key, value):
+    def forward(self, query, key, value, mask=None):
         N = query.shape[0]
         value_len, key_len, query_len = value.shape[1], key.shape[1], query.shape[1]
-
-        # Split the embedding into self.num_heads different pieces
-        query = query.reshape(N, query_len, self.num_heads, self.head_dim)
-        key = key.reshape(N, key_len, self.num_heads, self.head_dim)
-        value = value.reshape(N, value_len, self.num_heads, self.head_dim)
+        
+        # Perform linear transformation and split into num_heads
+        query = self.query(query).reshape(N, query_len, self.num_heads, self.head_dim)
+        key = self.key(key).reshape(N, key_len, self.num_heads, self.head_dim)
+        value = self.value(value).reshape(N, value_len, self.num_heads, self.head_dim)
 
         # Scaled Dot-Product Attention
         scores = torch.einsum("nqhd,nkhd->nhqk", [query, key])
+        # print('Score shape',scores.shape)
+
+        if mask is not None:
+            # print('Mask shape',mask.shape)
+            scores += (mask * -1e9)
+
         attention = torch.nn.functional.softmax(scores, dim=3)
 
-        out = torch.einsum("nhql,nlhd->nqhd", [attention, value]).reshape(
-            N, query_len, self.d_model
-        )
-
+        out = torch.einsum("nhql,nlhd->nqhd", [attention, value]).reshape(N, query_len, self.d_model)
         out = self.fc_out(out)
         return out
-
+    
 # Re-Transformer Encoder Layer with Delayed Non-Linear Transformation
 class ReTransformerEncoderLayer(nn.Module):
     def __init__(self, d_model, num_heads, include_ff=True, dropout=0.1, delay_nl=2):
@@ -79,16 +76,17 @@ class ReTransformerEncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.delay_nl = delay_nl
 
-    def forward(self, x, layer_num):
-        attn_output1 = self.self_attn1(x, x, x)
-        attn_output2 = self.self_attn2(attn_output1, attn_output1, attn_output1)
-        
+    def forward(self, x, layer_num, mask=None):
+        attn_output1 = self.self_attn1(x, x, x, mask)
+        x = x + self.dropout(attn_output1)  # Residual connection
+        x = self.norm1(x)  # Normalize after the first residual connection
+
+        attn_output2 = self.self_attn2(x, x, x, mask)  # Use the normalized x
+
         if layer_num >= self.delay_nl:
-            x = x + self.dropout(attn_output1)
-            x = self.norm1(x)
-            x = x + self.dropout(attn_output2)
-            x = self.norm2(x)
-            
+            x = x + self.dropout(attn_output2)  # Residual connection
+            x = self.norm2(x)  # Normalize after the second residual connection
+
             if self.include_ff:
                 ff_output = self.feed_forward(x)
                 x = x + self.dropout(ff_output)
@@ -96,7 +94,7 @@ class ReTransformerEncoderLayer(nn.Module):
         else:
             x = x + self.dropout(attn_output2)
             x = self.norm2(x)
-        
+
         return x
 
 # Re-Transformer Decoder Layer
@@ -108,12 +106,12 @@ class ReTransformerDecoderLayer(nn.Module):
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, enc_output):
-        attn_output = self.self_attn(x, x, x)
+    def forward(self, x, enc_output, src_mask=None, tgt_mask=None):
+        attn_output = self.self_attn(x, x, x, tgt_mask)
         x = x + self.dropout(attn_output)
         x = self.norm(x)
         
-        attn_output = self.enc_dec_attn(x, enc_output, enc_output)  # New attention layer
+        attn_output = self.enc_dec_attn(x, enc_output, enc_output, src_mask)
         x = x + self.dropout(attn_output)
         x = self.norm(x)
         
@@ -140,21 +138,18 @@ class ReTransformer(nn.Module):
         
         self.fc_out = nn.Linear(d_model, len(TGT_vocab))
 
-    def forward(self, src, tgt=None):
+    def forward(self, src, tgt=None, src_mask=None, tgt_mask=None):
         src = self.src_embedding(src)
         src = self.pos_encoder(src)
 
         for layer_num, layer in enumerate(self.encoder):
-            src = layer(src, layer_num)
+            src = layer(src, layer_num, mask=src_mask)  # Modify your encoder layer to accept src_mask if needed
 
-        if tgt is not None:
-            tgt = self.tgt_embedding(tgt)
-            tgt = self.pos_encoder(tgt)
-            
-            for layer in self.decoder:
-                tgt = layer(tgt, src)
-            
-            output = self.fc_out(tgt)
-            return output
-        else:
-            pass
+        tgt = self.tgt_embedding(tgt)
+        tgt = self.pos_encoder(tgt)
+        
+        for layer in self.decoder:
+            tgt = layer(tgt, src, src_mask=src_mask, tgt_mask=tgt_mask)
+        
+        output = self.fc_out(tgt)
+        return output
