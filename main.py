@@ -27,6 +27,11 @@ n_folds = 5  # Number of folds for cross-validation
 patience = 5  # Number of num_epochs to wait before early stopping
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Set all 3 variables to None if you want to use the entire dataset
+train_sample_size = 50000
+valid_sample_size = 5000
+test_sample_size = 100
+
 # Create an ArgumentParser object
 parser = argparse.ArgumentParser(description="A script with a Boolean argument")
 
@@ -66,8 +71,10 @@ print('Vocab built successfully')
 print('First 100 words in target vocab TGT_vocab : ', [TGT_vocab.get_itos()[i] for i in range(100)])
 
 # New function to create DataLoader from CSV
-def csv_to_dataloader_and_vocab(filename, batch_size, SRC_vocab, TGT_vocab):
+def csv_to_dataloader_and_vocab(filename, batch_size, SRC_vocab, TGT_vocab, sample_size=None):
     df = pd.read_csv(filename)
+    if sample_size:
+        df = df.sample(n=sample_size)  # Randomly sample 'sample_size' rows from the DataFrame
     src_data = [sp_src.encode(item, out_type=str) for item in df['src']]
     tgt_data = [sp_tgt.encode(item, out_type=str) for item in df['tgt']]
     
@@ -83,9 +90,9 @@ def csv_to_dataloader_and_vocab(filename, batch_size, SRC_vocab, TGT_vocab):
     return dataloader
 
 # DataLoaders and Vocab
-train_dataloader = csv_to_dataloader_and_vocab('training.csv', batch_size, SRC_vocab, TGT_vocab)
-valid_dataloader = csv_to_dataloader_and_vocab('validation.csv', batch_size, SRC_vocab, TGT_vocab)
-test_dataloader = csv_to_dataloader_and_vocab('testing.csv', batch_size, SRC_vocab, TGT_vocab)
+train_dataloader = csv_to_dataloader_and_vocab('training.csv', batch_size, SRC_vocab, TGT_vocab, train_sample_size)
+valid_dataloader = csv_to_dataloader_and_vocab('validation.csv', batch_size, SRC_vocab, TGT_vocab, valid_sample_size)
+test_dataloader = csv_to_dataloader_and_vocab('testing.csv', batch_size, SRC_vocab, TGT_vocab, test_sample_size)
 print('DataLoaders and Vocab created successfully')
 
 if args.hyperparametertuning:
@@ -219,9 +226,6 @@ for i, batch in enumerate(test_dataloader):
     src, trg = src.to(device), trg.to(device)
     output = model(src, trg)
 
-    ##uncomment to do beam search instead but not working
-    # output = model(src, None)
-
     output = output.argmax(dim=2)
 
     for i in range(src.size(0)):  # Loop over each sentence in the batch
@@ -248,3 +252,10 @@ print("Sample translated targets:", all_translated_trg[:5])
 df_test = pd.read_csv('testing.csv')
 actual_targets = df_test['tgt'][:5].tolist()
 print('Actual Targets : ', actual_targets)
+
+# Create a DataFrame and save to CSV
+df = pd.DataFrame({
+    'Target': all_trg,
+    'Predicted': all_translated_trg
+})
+df.to_csv('test_predictions.csv', index=False)
