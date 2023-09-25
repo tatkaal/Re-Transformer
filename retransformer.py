@@ -62,18 +62,20 @@ class MultiHeadAttention(nn.Module):
 
 # Re-Transformer Encoder Layer with Delayed Non-Linear Transformation
 class ReTransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.1, delay_nl=2):
+    def __init__(self, d_model, num_heads, include_ff=True, dropout=0.1, delay_nl=2):
         super(ReTransformerEncoderLayer, self).__init__()
         self.self_attn1 = MultiHeadAttention(d_model, num_heads)
         self.self_attn2 = MultiHeadAttention(d_model, num_heads)
-        self.feed_forward = nn.Sequential(
-            nn.Linear(d_model, 4 * d_model),
-            nn.ReLU(),
-            nn.Linear(4 * d_model, d_model)
-        )
+        self.include_ff = include_ff
+        if self.include_ff:
+            self.feed_forward = nn.Sequential(
+                nn.Linear(d_model, 4 * d_model),
+                nn.ReLU(),
+                nn.Linear(4 * d_model, d_model)
+            )
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model) if self.include_ff else None
         self.dropout = nn.Dropout(dropout)
         self.delay_nl = delay_nl
 
@@ -87,8 +89,7 @@ class ReTransformerEncoderLayer(nn.Module):
             x = x + self.dropout(attn_output2)
             x = self.norm2(x)
             
-            # Apply feed-forward layer only for specific layers
-            if layer_num % 2 == 0:
+            if self.include_ff:
                 ff_output = self.feed_forward(x)
                 x = x + self.dropout(ff_output)
                 x = self.norm3(x)
@@ -97,7 +98,6 @@ class ReTransformerEncoderLayer(nn.Module):
             x = self.norm2(x)
         
         return x
-
 
 # Re-Transformer Decoder Layer
 class ReTransformerDecoderLayer(nn.Module):
@@ -123,33 +123,38 @@ class ReTransformerDecoderLayer(nn.Module):
 class ReTransformer(nn.Module):
     def __init__(self, SRC_vocab, TGT_vocab, d_model, num_heads, num_encoder_layers, num_decoder_layers, dropout=0.1):
         super(ReTransformer, self).__init__()
-        self.SRC_vocab = SRC_vocab  # if needed
-        self.TGT_vocab = TGT_vocab  # Store it as a class attribute
+        self.SRC_vocab = SRC_vocab
+        self.TGT_vocab = TGT_vocab
         self.src_embedding = nn.Embedding(len(SRC_vocab), d_model)
         self.tgt_embedding = nn.Embedding(len(TGT_vocab), d_model)
         self.pos_encoder = PositionalEncoding(d_model)
+        
+        # Create encoder layers with specific combination of self-attention and feed-forward layers
         self.encoder = nn.ModuleList(
-            [ReTransformerEncoderLayer(d_model, num_heads, dropout) for _ in range(num_encoder_layers)]
+            [ReTransformerEncoderLayer(d_model=d_model, num_heads=num_heads, include_ff=(i % 2 == 0), dropout=dropout) for i in range(num_encoder_layers)]
         )
+ 
         self.decoder = nn.ModuleList(
             [ReTransformerDecoderLayer(d_model, num_heads, dropout) for _ in range(num_decoder_layers)]
         )
+        
         self.fc_out = nn.Linear(d_model, len(TGT_vocab))
 
     def forward(self, src, tgt=None):
-        src = self.src_embedding(src)  # Embed source sequences
+        src = self.src_embedding(src)
         src = self.pos_encoder(src)
 
         for layer_num, layer in enumerate(self.encoder):
             src = layer(src, layer_num)
 
         if tgt is not None:
-            tgt = self.tgt_embedding(tgt)  # Embed target sequences only if not None
+            tgt = self.tgt_embedding(tgt)
             tgt = self.pos_encoder(tgt)
-            # Use the encoder's output in the decoder
+            
             for layer in self.decoder:
-                tgt = layer(tgt, src)  # Add the encoder's output to the decoder's input
+                tgt = layer(tgt, src)
+            
             output = self.fc_out(tgt)
             return output
         else:
-            pass  # for beam search
+            pass
