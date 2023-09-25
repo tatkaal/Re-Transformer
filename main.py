@@ -26,7 +26,6 @@ learning_rate = 0.0001
 n_folds = 5  # Number of folds for cross-validation
 patience = 5  # Number of num_epochs to wait before early stopping
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# device = torch.device("cpu")
 
 # Create an ArgumentParser object
 parser = argparse.ArgumentParser(description="A script with a Boolean argument")
@@ -169,11 +168,12 @@ for fold, (train_index, valid_index) in enumerate(kf.split(train_dataloader.data
 
                 print(f"Validation, Batch [{i + 1}/{len(valid_dataloader)}], Validation Loss: {val_loss.item():.4f}")
 
+        current_lr = optimizer.param_groups[0]['lr']
         avg_val_loss = total_val_loss / len(valid_dataloader)
         # Log the epoch results to the file
         with open(log_file, 'a') as f:
             f.write(f"FOLD {fold+1}, Epoch [{epoch+1}/{num_epochs}], Train Loss: {total_train_loss/len(train_dataloader):.4f}, Validation Loss: {avg_val_loss:.4f}, Current LR: {current_lr}\n")
-        current_lr = optimizer.param_groups[0]['lr']
+        
         print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {total_train_loss / len(train_dataloader):.4f}, Validation Loss: {avg_val_loss:.4f}, Current LR: {current_lr}")
 
         scheduler.step(avg_val_loss)

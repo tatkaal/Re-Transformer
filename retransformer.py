@@ -78,9 +78,12 @@ class ReTransformerEncoderLayer(nn.Module):
         if layer_num >= self.delay_nl:
             x = x + self.dropout(attn_output1)
             x = self.norm1(x)
+            x = x + self.dropout(attn_output2)  # Added this line to delay the second attention as well
+            x = self.norm2(x)  # Added this line to delay the second normalization as well
         
-        x = x + self.dropout(attn_output2)
-        x = self.norm2(x)
+        else:
+            x = x + self.dropout(attn_output2)
+            x = self.norm2(x)
         return x
 
 # Re-Transformer Decoder Layer
@@ -203,4 +206,4 @@ class ReTransformer(nn.Module):
             output = self.fc_out(tgt)
             return output
         else:
-            return self.beam_search(src)  # Return None when tgt is not given
+            pass  # for beam search
